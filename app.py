@@ -17,7 +17,6 @@ with open("landmarks.json", "r", encoding="utf-8") as f:
     DATA = json.load(f)
 
 # --- IN-MEMORY DATABASE (Swap with Supabase/PostgreSQL in production) ---
-# Registered Toto Drivers keyed by WhatsApp phone number (with country code, e.g., "919876543210")
 DRIVERS = {
     "919000000001": {
         "name": "Suman Das",
@@ -43,10 +42,10 @@ RIDE_COUNTER = 100
 
 # --- WHATSAPP CLOUD API HELPERS ---
 async def send_whatsapp_message(to: str, body_text: str, buttons: list = None):
-    """Sends plain text or interactive button message (max 3 buttons)."""
+    """Sends plain text or up to 3 interactive reply buttons."""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    
+
     if buttons:
         payload = {
             "messaging_product": "whatsapp",
@@ -74,17 +73,53 @@ async def send_whatsapp_message(to: str, body_text: str, buttons: list = None):
     async with httpx.AsyncClient() as client:
         await client.post(url, headers=headers, json=payload)
 
+async def send_whatsapp_list(to: str, body_text: str, button_label: str, section_title: str, rows: list):
+    """Sends a scrollable WhatsApp interactive list menu (supports up to 10 items)."""
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+
+    formatted_rows = [
+        {
+            "id": r["id"],
+            "title": r["title"][:24],
+            "description": r.get("description", "")[:72]
+        }
+        for r in rows[:10]
+    ]
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": body_text},
+            "action": {
+                "button": button_label[:20],
+                "sections": [
+                    {
+                        "title": section_title[:24],
+                        "rows": formatted_rows
+                    }
+                ]
+            }
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        await client.post(url, headers=headers, json=payload)
+
 async def transcribe_voice_note(media_id: str) -> str:
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
     async with httpx.AsyncClient() as client:
         meta_res = await client.get(f"https://graph.facebook.com/v20.0/{media_id}", headers=headers)
         media_url = meta_res.json().get("url")
         audio_bytes = (await client.get(media_url, headers=headers)).content
-        
+
         files = {"file": ("voice.ogg", audio_bytes, "audio/ogg")}
         data = {
             "model": "whisper-large-v3",
-            "prompt": "Banpur, Bakultala, Station, Bazar, Toto, রিজার্ভ, স্টেশন, বকুলতলা, বাজার"
+            "prompt": "Banpur, Bakultala, Station, Bazar, Hospital, High School, Toto, রিজার্ভ, স্টেশন, বকুলতলা, বাজার, হাসপাতাল, স্কুল"
         }
         stt_res = await client.post(
             "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -94,7 +129,7 @@ async def transcribe_voice_note(media_id: str) -> str:
         )
         return stt_res.json().get("text", "")
 
-# --- LANDMARK PARSER ---
+# --- LANDMARK HELPERS ---
 def match_landmarks(raw_text: str):
     text = raw_text.lower()
     separators = [" to ", " থেকে ", " theke ", " -> ", " - "]
@@ -113,7 +148,7 @@ def match_landmarks(raw_text: str):
     pickup_id = find_best(parts[0]) if len(parts) >= 1 else None
     drop_id = find_best(parts[1]) if len(parts) == 2 else None
     ride_type = "full" if any(w in text for w in ["full", "reserve", "রিজার্ভ", "পুরো"]) else "share"
-    
+
     seats = 1
     for num in ["2", "3", "4", "২", "৩", "৪"]:
         if num in text:
@@ -127,6 +162,45 @@ def get_landmark_name(lm_id: str) -> str:
             return f"{lm['name_bn']} ({lm['name_en']})"
     return lm_id
 
+def build_landmark_rows(prefix: str, exclude_id: str = None):
+    rows = []
+    for lm in DATA["landmarks"]:
+        if lm["id"] == exclude_id:
+            continue
+        rows.append({
+            "id": f"{prefix}{lm['id']}",
+            "title": lm["name_bn"],
+            "description": lm["name_en"]
+        })
+    return rows
+
+async def send_fare_confirmation(sender: str, pickup_id: str, drop_id: str, ride_type: str = "share", seats: int = 1):
+    route_key = f"{pickup_id}->{drop_id}"
+    route = DATA["routes"].get(route_key, {"share_fare": 15, "full_fare": 60})
+    fare = route["full_fare"] if ride_type == "full" else route["share_fare"] * seats
+
+    PASSENGER_SESSIONS[sender] = {
+        "pickup": pickup_id,
+        "drop": drop_id,
+        "type": ride_type,
+        "seats": seats,
+        "fare": fare
+    }
+
+    await send_whatsapp_message(
+        sender,
+        f"বুকিং তথ্য:\n"
+        f"• উঠবেন: {get_landmark_name(pickup_id)}\n"
+        f"• নামবেন: {get_landmark_name(drop_id)}\n"
+        f"• ধরন: {'রিজার্ভ' if ride_type == 'full' else f'শেয়ার ({seats} সিট)'}\n"
+        f"• ভাড়া: ₹{fare}",
+        [
+            {"id": "CONFIRM_RIDE", "title": f"✅ Confirm ₹{fare}"},
+            {"id": "TOGGLE_FULL", "title": "🛺 Reserve Full"},
+            {"id": "CANCEL_NEW", "title": "❌ Cancel"}
+        ]
+    )
+
 # --- DRIVER QUEUE & DISPATCH ENGINE ---
 def get_next_driver_at_stand(stand_id: str, excluded_drivers: list):
     eligible = [
@@ -135,7 +209,6 @@ def get_next_driver_at_stand(stand_id: str, excluded_drivers: list):
     ]
     if not eligible:
         return None
-    # Sort by longest waiting time at stand (FIFO)
     eligible.sort(key=lambda item: item[1]["joined_queue_at"])
     return eligible[0][0]
 
@@ -150,7 +223,7 @@ async def dispatch_to_next_driver(ride_id: str):
         await send_whatsapp_message(
             ride["passenger"],
             "দুঃখিত, এই মুহূর্তে এই স্ট্যান্ডে কোনো খালি টোটো নেই। কিছুক্ষণ পর আবার চেষ্টা করুন।",
-            [{"id": "POPULAR_ROUTES", "title": "🔄 Try Again"}]
+            [{"id": "OPEN_PICKUP_MENU", "title": "🔄 Try Again"}]
         )
         return
 
@@ -171,7 +244,6 @@ async def dispatch_to_next_driver(ride_id: str):
         ]
     )
 
-    # Wait 25 seconds for driver response; auto-skip if ignored
     await asyncio.sleep(25)
     if RIDES.get(ride_id, {}).get("status") == "SEARCHING" and RIDES[ride_id].get("offered_to") == driver_phone:
         RIDES[ride_id]["rejected_by"].append(driver_phone)
@@ -184,11 +256,16 @@ async def handle_driver_message(driver_phone: str, message: dict):
     msg_type = message.get("type")
 
     if msg_type == "interactive":
-        btn_id = message["interactive"]["button_reply"]["id"]
+        interactive_type = message["interactive"]["type"]
+        selected_id = (
+            message["interactive"]["list_reply"]["id"]
+            if interactive_type == "list_reply"
+            else message["interactive"]["button_reply"]["id"]
+        )
 
-        # Driver selects Stand to go Online
-        if btn_id.startswith("STAND_"):
-            stand_id = btn_id.replace("STAND_", "")
+        # Driver selects Stand from scrollable list
+        if selected_id.startswith("STAND_"):
+            stand_id = selected_id.replace("STAND_", "")
             driver["online"] = True
             driver["stand_id"] = stand_id
             driver["joined_queue_at"] = datetime.utcnow().isoformat()
@@ -199,15 +276,14 @@ async def handle_driver_message(driver_phone: str, message: dict):
             )
             return
 
-        if btn_id == "DRIVER_OFF":
+        if selected_id == "DRIVER_OFF":
             driver["online"] = False
             driver["stand_id"] = None
             await send_whatsapp_message(driver_phone, "🔴 আপনি অফলাইন হয়েছেন। আবার ডিউটি শুরু করতে 'duty' লিখুন।")
             return
 
-        # Driver Accepts Ride
-        if btn_id.startswith("ACCEPT_"):
-            ride_id = btn_id.replace("ACCEPT_", "")
+        if selected_id.startswith("ACCEPT_"):
+            ride_id = selected_id.replace("ACCEPT_", "")
             ride = RIDES.get(ride_id)
             if not ride or ride["status"] != "SEARCHING":
                 await send_whatsapp_message(driver_phone, "এই বুকিংটি আর উপলব্ধ নেই।")
@@ -217,7 +293,6 @@ async def handle_driver_message(driver_phone: str, message: dict):
             ride["driver"] = driver_phone
             driver["active_ride_id"] = ride_id
 
-            # Notify Driver
             await send_whatsapp_message(
                 driver_phone,
                 f"🛺 বুকিং কনফার্ম হয়েছে! (#{ride_id})\n"
@@ -228,7 +303,6 @@ async def handle_driver_message(driver_phone: str, message: dict):
                 [{"id": f"DONE_{ride_id}", "title": "🏁 Trip Done"}]
             )
 
-            # Notify Passenger
             await send_whatsapp_message(
                 ride["passenger"],
                 f"✅ আপনার টোটো বুক হয়েছে!\n"
@@ -240,9 +314,8 @@ async def handle_driver_message(driver_phone: str, message: dict):
             )
             return
 
-        # Driver Skips Ride
-        if btn_id.startswith("SKIP_"):
-            ride_id = btn_id.replace("SKIP_", "")
+        if selected_id.startswith("SKIP_"):
+            ride_id = selected_id.replace("SKIP_", "")
             ride = RIDES.get(ride_id)
             if ride and ride["status"] == "SEARCHING":
                 ride["rejected_by"].append(driver_phone)
@@ -250,14 +323,12 @@ async def handle_driver_message(driver_phone: str, message: dict):
                 await dispatch_to_next_driver(ride_id)
             return
 
-        # Driver Completes Trip
-        if btn_id.startswith("DONE_"):
-            ride_id = btn_id.replace("DONE_", "")
+        if selected_id.startswith("DONE_"):
+            ride_id = selected_id.replace("DONE_", "")
             ride = RIDES.get(ride_id)
             if ride:
                 ride["status"] = "COMPLETED"
                 driver["active_ride_id"] = None
-                # Auto-move driver to the queue at the drop-off stand!
                 driver["stand_id"] = ride["drop"]
                 driver["joined_queue_at"] = datetime.utcnow().isoformat()
 
@@ -272,22 +343,20 @@ async def handle_driver_message(driver_phone: str, message: dict):
                 )
             return
 
-    # Driver Text Commands ("duty", "off", "status")
     if msg_type == "text":
         txt = message["text"]["body"].strip().lower()
         if txt in ["off", "offline", "অফ", "অফলাইন"]:
             driver["online"] = False
+            driver["stand_id"] = None
             await send_whatsapp_message(driver_phone, "🔴 আপনি অফলাইন হয়েছেন।")
         else:
-            # Show stand selection buttons
-            stand_buttons = [
-                {"id": f"STAND_{lm['id']}", "title": lm["name_bn"]}
-                for lm in DATA["landmarks"][:3]
-            ]
-            await send_whatsapp_message(
-                driver_phone,
-                f"নমস্কার {driver['name']}! 🛺 কোন স্ট্যান্ড থেকে ডিউটি শুরু করবেন?",
-                stand_buttons
+            stand_rows = build_landmark_rows("STAND_")
+            await send_whatsapp_list(
+                to=driver_phone,
+                body_text=f"নমস্কার {driver['name']}! 🛺 নিচের তালিকা থেকে আপনার বর্তমান স্ট্যান্ড বেছে নিন:",
+                button_label="📍 Choose Stand",
+                section_title="Banpur Toto Stands",
+                rows=stand_rows
             )
 
 # --- PASSENGER HANDLER ---
@@ -296,11 +365,50 @@ async def handle_passenger_message(sender: str, message: dict):
     msg_type = message.get("type")
 
     if msg_type == "interactive":
-        btn_id = message["interactive"]["button_reply"]["id"]
+        interactive_type = message["interactive"]["type"]
+        selected_id = (
+            message["interactive"]["list_reply"]["id"]
+            if interactive_type == "list_reply"
+            else message["interactive"]["button_reply"]["id"]
+        )
 
-        if btn_id == "CONFIRM_RIDE":
+        # Step 1 from Menu: Passenger picked Pickup Stand -> Show Drop Stand List
+        if selected_id.startswith("PICKUP_"):
+            pickup_id = selected_id.replace("PICKUP_", "")
+            PASSENGER_SESSIONS[sender] = {"pickup": pickup_id}
+            drop_rows = build_landmark_rows("DROP_", exclude_id=pickup_id)
+            await send_whatsapp_list(
+                to=sender,
+                body_text=f"উঠবেন: *{get_landmark_name(pickup_id)}*\nএবার কোথায় নামবেন বেছে নিন:",
+                button_label="🏁 Select Drop",
+                section_title="Drop Landmarks",
+                rows=drop_rows
+            )
+            return
+
+        # Step 2 from Menu: Passenger picked Drop Stand -> Show Fare Confirmation
+        if selected_id.startswith("DROP_"):
+            drop_id = selected_id.replace("DROP_", "")
+            pickup_id = PASSENGER_SESSIONS.get(sender, {}).get("pickup")
+            if not pickup_id:
+                return
+            await send_fare_confirmation(sender, pickup_id, drop_id)
+            return
+
+        if selected_id == "OPEN_PICKUP_MENU":
+            pickup_rows = build_landmark_rows("PICKUP_")
+            await send_whatsapp_list(
+                to=sender,
+                body_text="কোথা থেকে উঠবেন বেছে নিন:",
+                button_label="📍 Select Pickup",
+                section_title="Pickup Landmarks",
+                rows=pickup_rows
+            )
+            return
+
+        if selected_id == "CONFIRM_RIDE":
             session = PASSENGER_SESSIONS.get(sender)
-            if not session:
+            if not session or "drop" not in session:
                 return
             RIDE_COUNTER += 1
             ride_id = str(RIDE_COUNTER)
@@ -325,9 +433,9 @@ async def handle_passenger_message(sender: str, message: dict):
             await dispatch_to_next_driver(ride_id)
             return
 
-        if btn_id == "TOGGLE_FULL":
+        if selected_id == "TOGGLE_FULL":
             session = PASSENGER_SESSIONS.get(sender)
-            if session:
+            if session and "drop" in session:
                 route = DATA["routes"].get(f"{session['pickup']}->{session['drop']}", {"full_fare": 60})
                 session["type"] = "full"
                 session["fare"] = route["full_fare"]
@@ -338,8 +446,8 @@ async def handle_passenger_message(sender: str, message: dict):
                 )
             return
 
-        if btn_id.startswith("CANCEL_"):
-            ride_id = btn_id.replace("CANCEL_", "")
+        if selected_id.startswith("CANCEL_"):
+            ride_id = selected_id.replace("CANCEL_", "")
             ride = RIDES.get(ride_id)
             if ride and ride["status"] in ["SEARCHING", "ASSIGNED"]:
                 ride["status"] = "CANCELLED"
@@ -348,9 +456,11 @@ async def handle_passenger_message(sender: str, message: dict):
                     DRIVERS[d_phone]["active_ride_id"] = None
                     await send_whatsapp_message(d_phone, f"❌ যাত্রী বুকিং #{ride_id} বাতিল করেছেন। আপনি আবার স্ট্যান্ড লাইনে আছেন।")
                 await send_whatsapp_message(sender, "❌ আপনার বুকিং বাতিল করা হয়েছে।")
+            else:
+                await send_whatsapp_message(sender, "❌ বুকিং বাতিল করা হয়েছে।")
             return
 
-    # Process Voice or Text Landmark
+    # Process Voice Note or Text Landmark
     if msg_type == "audio":
         raw_text = await transcribe_voice_note(message["audio"]["id"])
     elif msg_type == "text":
@@ -359,35 +469,18 @@ async def handle_passenger_message(sender: str, message: dict):
         return
 
     pickup_id, drop_id, ride_type, seats = match_landmarks(raw_text)
-    if not pickup_id or not drop_id:
-        await send_whatsapp_message(
-            sender,
-            "নমস্কার! 🛺 কোথা থেকে কোথায় যাবেন লিখুন বা **ভয়েস নোট** পাঠান।\n"
-            "উদাহরণ: *বকুলতলা থেকে বানপুর স্টেশন* (Bakultala to Banpur Station)"
+    if not pickup_id or not drop_id or pickup_id == drop_id:
+        pickup_rows = build_landmark_rows("PICKUP_")
+        await send_whatsapp_list(
+            to=sender,
+            body_text="নমস্কার! 🛺 ভয়েস নোট পাঠান, জায়গার নাম লিখুন (যেমন: *বকুলতলা থেকে স্টেশন*), অথবা নিচের তালিকা থেকে জায়গা বেছে নিন:",
+            button_label="📍 Select Pickup",
+            section_title="Pickup Landmarks",
+            rows=pickup_rows
         )
         return
 
-    route_key = f"{pickup_id}->{drop_id}"
-    route = DATA["routes"].get(route_key, {"share_fare": 15, "full_fare": 60})
-    fare = route["full_fare"] if ride_type == "full" else route["share_fare"] * seats
-
-    PASSENGER_SESSIONS[sender] = {
-        "pickup": pickup_id, "drop": drop_id, "type": ride_type, "seats": seats, "fare": fare
-    }
-
-    await send_whatsapp_message(
-        sender,
-        f"বুকিং তথ্য:\n"
-        f"• উঠবেন: {get_landmark_name(pickup_id)}\n"
-        f"• নামবেন: {get_landmark_name(drop_id)}\n"
-        f"• ধরন: {'রিজার্ভ' if ride_type == 'full' else f'শেয়ার ({seats} সিট)'}\n"
-        f"• ভাড়া: ₹{fare}",
-        [
-            {"id": "CONFIRM_RIDE", "title": f"✅ Confirm ₹{fare}"},
-            {"id": "TOGGLE_FULL", "title": "🛺 Reserve Full"},
-            {"id": "CANCEL_NEW", "title": "❌ Cancel"}
-        ]
-    )
+    await send_fare_confirmation(sender, pickup_id, drop_id, ride_type, seats)
 
 # --- WEBHOOK ENDPOINTS ---
 @app.get("/webhook")
@@ -405,7 +498,6 @@ async def incoming_webhook(request: Request, background_tasks: BackgroundTasks):
         if "messages" in value:
             msg = value["messages"][0]
             sender = msg["from"]
-            # Route automatically based on whether sender is a registered driver
             if sender in DRIVERS:
                 background_tasks.add_task(handle_driver_message, sender, msg)
             else:
