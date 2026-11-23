@@ -1,0 +1,88 @@
+{
+  "landmarks": [
+    {
+      "id": "STN_BANPUR",
+      "name_en": "Banpur Station",
+      "name_bn": "বানপুর স্টেশন",
+      "aliases": [
+        "banpur",
+        "banpur station",
+        "station",
+        "rail station",
+        "বানপুর",
+        "বানপুর স্টেশন",
+        "স্টেশন",
+        "রেল স্টেশন"
+      ]
+    },
+    {
+      "id": "BAKULTALA",
+      "name_en": "Banpur Bakultala",
+      "name_bn": "বকুলতলা",
+      "aliases": [
+        "bakultala",
+        "bakultola",
+        "bokultala",
+        "banpur bakultala",
+        "বকুলতলা",
+        "বকুলতলা মোড়",
+        "বানপুর বকুলতলা"
+      ]
+    },
+    {
+      "id": "BAZAR_MAIN",
+      "name_en": "Banpur Bazar",
+      "name_bn": "বানপুর বাজার",
+      "aliases": [
+        "bazar",
+        "bazaar",
+        "banpur bazar",
+        "market",
+        "hat",
+        "হাট",
+        "বাজার",
+        "বানপুর বাজার"
+      ]
+    },
+    {
+      "id": "HOSPITAL_BPHC",
+      "name_en": "Banpur Hospital",
+      "name_bn": "বানপুর হাসপাতাল",
+      "aliases": [
+        "hospital",
+        "health center",
+        "banpur hospital",
+        "স্বাস্থ্যকেন্দ্র",
+        "হাসপাতাল",
+        "বানপুর হাসপাতাল"
+      ]
+    },
+    {
+      "id": "HIGH_SCHOOL",
+      "name_en": "Banpur High School",
+      "name_bn": "বানপুর হাই স্কুল",
+      "aliases": [
+        "school",
+        "high school",
+        "banpur school",
+        "স্কুল",
+        "হাই স্কুল",
+        "বানপুর স্কুল"
+      ]
+    }
+  ],
+  "routes": {
+    "BAKULTALA->STN_BANPUR": { "share_fare": 15, "full_fare": 60 },
+    "STN_BANPUR->BAKULTALA": { "share_fare": 15, "full_fare": 60 },
+    "BAKULTALA->BAZAR_MAIN": { "share_fare": 10, "full_fare": 40 },
+    "BAZAR_MAIN->BAKULTALA": { "share_fare": 10, "full_fare": 40 },
+    "STN_BANPUR->BAZAR_MAIN": { "share_fare": 10, "full_fare": 40 },
+    "BAZAR_MAIN->STN_BANPUR": { "share_fare": 10, "full_fare": 40 },
+    "STN_BANPUR->HOSPITAL_BPHC": { "share_fare": 15, "full_fare": 60 },
+    "HOSPITAL_BPHC->STN_BANPUR": { "share_fare": 15, "full_fare": 60 },
+    "BAKULTALA->HOSPITAL_BPHC": { "share_fare": 15, "full_fare": 60 },
+    "HOSPITAL_BPHC->BAKULTALA": { "share_fare": 15, "full_fare": 60 },
+    "STN_BANPUR->HIGH_SCHOOL": { "share_fare": 10, "full_fare": 50 },
+    "HIGH_SCHOOL->STN_BANPUR": { "share_fare": 10, "full_fare": 50 }
+  }
+}
